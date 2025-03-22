@@ -5,7 +5,7 @@ import json
 import math
 import re
 from typing import Dict
-
+import os
 from latex2sympy2_extended import NormalizationConfig
 from math_verify import LatexExtractionConfig, parse, verify
 
@@ -373,6 +373,7 @@ def code_reward(completions, **kwargs) -> list[float]:
     """
     code_snippets = [extract_code(completion[-1]["content"]) for completion in completions]
     verification_info = kwargs["verification_info"]
+    timeout = int(os.environ.get("E2B_TIMEOUT", kwargs.get("e2b_timeout", 30)))
     scripts = [
         evaluation_script_template.format(code=json.dumps(code), test_cases=json.dumps(json.dumps(info["test_cases"])))
         for code, info in zip(code_snippets, verification_info)
@@ -383,7 +384,7 @@ def code_reward(completions, **kwargs) -> list[float]:
     if not all(v["language"] == language for v in verification_info):
         raise ValueError("All verification_info must have the same language", verification_info)
     try:
-        rewards = run_async_from_sync(scripts, language)
+        rewards = run_async_from_sync(scripts, language, timeout=timeout)
 
     except Exception as e:
         print(f"Error from E2B executor: {e}")
@@ -408,12 +409,12 @@ def get_code_format_reward(language: str = "python"):
     return code_format_reward
 
 
-def run_async_from_sync(scripts: list[str], language: str) -> list[float]:
+def run_async_from_sync(scripts: list[str], language: str, timeout: int = 30) -> list[float]:
     """Function wrapping the `run_async` function."""
     # Create a new event loop and set it
     try:
         # Run the async function and get the result
-        rewards = asyncio.run(run_async(scripts, language))
+        rewards = asyncio.run(run_async(scripts, language, timeout=timeout))
     except Exception as e:
         print(f"Error from E2B executor async: {e}")
         raise e
@@ -421,12 +422,12 @@ def run_async_from_sync(scripts: list[str], language: str) -> list[float]:
     return rewards
 
 
-async def run_async(scripts: list[str], language: str) -> list[float]:
+async def run_async(scripts: list[str], language: str, timeout: int = 30) -> list[float]:
     # Create the sandbox by hand, currently there's no context manager for this version
-    sbx = await AsyncSandbox.create(timeout=30, request_timeout=3)
+    sbx = await AsyncSandbox.create(timeout=timeout)
 
     # Create a list of tasks for running scripts concurrently
-    tasks = [run_script(sbx, script, language) for script in scripts]
+    tasks = [run_script(sbx, script, language,timeout=timeout) for script in scripts]
 
     # Wait for all tasks to complete and gather their results as they finish
     results = await asyncio.gather(*tasks)
@@ -438,8 +439,8 @@ async def run_async(scripts: list[str], language: str) -> list[float]:
     return rewards
 
 
-async def run_script(sbx: AsyncSandbox, script: str, language: str) -> float:
-    execution = await sbx.run_code(script, language=language)
+async def run_script(sbx: AsyncSandbox, script: str, language: str, timeout: int = 30) -> float:
+    execution = await sbx.run_code(script, language=language, timeout=timeout)
     try:
         return float(execution.text)
     except (TypeError, ValueError):
